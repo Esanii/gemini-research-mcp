@@ -3,7 +3,11 @@ import os
 from pathlib import Path
 from mcp.server.models import InitializationOptions
 from mcp.server import NotificationOptions, Server
-from mcp.server.stdio import stdio_server
+# REMOVED: stdio_server import
+from mcp.server.sse import SseServerTransport  # ADDED: Web transport layer
+from starlette.applications import Starlette   # ADDED: Web framework container
+from starlette.routing import Route            # ADDED: URL routing
+import uvicorn                                 # ADDED: Production web server
 from mcp import types
 from google import genai
 from google.genai import types as genai_types
@@ -122,12 +126,14 @@ async def handle_call_tool(name: str, arguments: dict) -> list[types.TextContent
     else:
         return [types.TextContent(type="text", text=f"Unknown tool: {name}")]
 
+# --- RENDER SSE NETWORKING CONFIGURATION ---
+transport = SseServerTransport("/sse")
 
-async def main():
-    async with stdio_server() as (read_stream, write_stream):
+async def handle_sse(request):
+    async with transport.connect_handlers(request.scope, request.receive, request._send_impl):
         await server.run(
-            read_stream,
-            write_stream,
+            transport.read_stream,
+            transport.write_stream,
             InitializationOptions(
                 server_name="gemini-research-mcp",
                 server_version="1.0.0",
@@ -138,6 +144,15 @@ async def main():
             ),
         )
 
+# Create a web application instance that Render can run
+app = Starlette(
+    routes=[
+        Route("/sse", endpoint=handle_sse, methods=["GET"]),
+        Route("/messages", endpoint=transport.handle_post_message, methods=["POST"]),
+    ]
+)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    # Fallback for local testing
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run(app, host="0.0.0.0", port=port)
